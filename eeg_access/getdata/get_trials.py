@@ -10,6 +10,7 @@ from pathlib import Path
 from ..utilities import build_trial_metadata, resolve_dir, check_islocal, check_stale, fetch_remote
 
 
+
 class TrialHandler:
     """Load and selected EEG trial data from a zarr datastores.
 
@@ -142,10 +143,12 @@ class TrialHandler:
                 vals = [vals]
             mask[col] &= self.metadata[col].isin(vals)
         mask = mask.to_numpy()
-        if cond == 'and':
-            mask = np.all(mask, axis=1)
         if cond == 'or':
             mask = np.any(mask, axis=1)
+        elif cond == 'and':
+            mask = np.all(mask, axis=1)
+        else:
+            raise ValueError('Invalid cond: must be "and" or "or"')
 
         trials = self.metadata[mask].sort_values(list(filters.keys())).reset_index(drop=True)
         local_status = check_islocal(trials['path'].unique())
@@ -174,6 +177,7 @@ class TrialHandler:
         channels=None,
         tmin: float = None,
         tmax: float = None,
+        step = None,
         average_by=None,
         verbose=True,
         cond='and',
@@ -204,11 +208,15 @@ class TrialHandler:
             Channels to load.  Can be a list of integer indices or channel
             name strings.  When omitted, all channels are returned.
         tmin : float, optional
-            Start of the time window in seconds.  Not yet active — the full
-            timecourse is always returned for now.
+            Start of the time window in seconds.  Trials are cropped to
+            ``[tmin, tmax]`` before being returned.  When omitted, the full
+            epoch is returned.
         tmax : float, optional
-            End of the time window in seconds.  Not yet active — the full
-            timecourse is always returned for now.
+            End of the time window in seconds.  See ``tmin``.
+        step : int, optional
+            Sample step size for downsampling.  ``step=2`` returns every other
+            sample, halving the time resolution.  Default is ``None`` (no
+            downsampling).
         average_by : str or list of str, optional
             Metadata column(s) to average over.  For example
             ``average_by='condition'`` returns one averaged waveform per
@@ -257,46 +265,40 @@ class TrialHandler:
         for path in stores:
             if path not in self.store_cache.keys():
                 self.store_cache[path] = zarr.open(path, mode='r')
-    #
-        #channel_names = self.store_cache[stores[0]].attrs['channel_names']
-        #sfreq = self.store_cache[stores[0]].attrs['sfreq']
-        #timecourse = self.store_cache[stores[0]].attrs['timecourse']
-        #nsamples = self.store_cache[stores[0]].shape[-1]
-    #
-        #if channels is not none:
-        #    if isinstance(channels[0], str):
-        #        chan_idcs = np.searchsorted(channels, channel_names)
-        #else:
-        #    chan_idcs = np.arange(len(channel_names))
-    #
-        #tmin = np.argmin(timecourse-tmin) if tmin is not none else 0
-        #tmax = np.argmin(timecourse-tmin) if tmax is not none else nsamples-1
-        #sample_idcs = np.arange(tmin, tmax)#, step)
-    #
+
         store0 = self.store_cache[stores[0]]
-        # Zarr always reads a full contiguous trial block; channel / sample
-        # subsetting is applied in numpy on the in-memory chunk (cheap).
-        chan_sel = channels if channels is not None else slice(None)
-        sample_sel = slice(None)  # placeholder until tmin/tmax conversion is wired up
-        n_channels = len(channels) if channels is not None else store0.shape[1]
-        n_samples = store0.shape[2]
-    #
+        info = store0.attrs['info']
+        times = np.asarray(store0.attrs['times'])
+        channel_names = info['ch_names']
+
+        if channels is None:
+            channels = slice(None)
+        else:
+            channels = np.array([channel_names.index(c) if isinstance(c, str) else c for c in channels])
+            if channels.size > 1 and np.all(np.diff(channels) == channels[1] - channels[0]):
+                channels = slice(channels[0], channels[-1] + 1, channels[1] - channels[0])
+
+        tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
+        tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
+
+        samples = slice(tmin_idx, tmax_idx, step)
+
         # Sort by store then array_index for sequential chunk access;
         # record original row position so output order matches input trials
         ordered = trials[['path', 'array_index']].copy()
         ordered['out_row'] = np.arange(len(trials))
         ordered = ordered.sort_values(['path', 'array_index'])
-    #
+    
+        samplearr = store0.oindex[0, channels, samples]
+        n_channels, n_samples = samplearr.shape
         data_array = np.empty((len(trials), n_channels, n_samples), dtype='float32')
-    #
-        if verbose:
-            prog = tqdm(range(len(trials)), desc='Loading Trials')
-        for path, group in ordered.groupby('path', sort=False):
-            store = self.store_cache[path]
-            arr_idcs = group['array_index'].to_numpy()
-            out_rows = group['out_row'].to_numpy()
-            data_array[out_rows] = store.oindex[arr_idcs, chan_sel, sample_sel]
-            if verbose:
+    
+        with tqdm(total=len(trials), desc='Loading Trials', disable=not verbose) as prog:
+            for path, group in ordered.groupby('path', sort=False):
+                store = self.store_cache[path]
+                arr_idcs = group['array_index'].to_numpy()
+                out_rows = group['out_row'].to_numpy()
+                data_array[out_rows] = store.oindex[arr_idcs, channels, samples]
                 prog.update(len(out_rows))
     #
         meta = trials.reset_index(drop=True)
@@ -352,9 +354,10 @@ class TrialHandler:
             Channels to load (integer indices or name strings).  All channels
             are loaded when omitted.
         tmin : float, optional
-            Start of the time window in seconds (not yet active).
+            Start of the time window in seconds.  When omitted, the full epoch
+            is returned.
         tmax : float, optional
-            End of the time window in seconds (not yet active).
+            End of the time window in seconds.  See ``tmin``.
         average_by : str or list of str, optional
             Metadata column(s) to average over within each batch.
         sort_lookup : bool, optional
