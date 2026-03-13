@@ -8,8 +8,8 @@ Clone the repo and install in editable mode:
 
 .. code-block:: bash
 
-   git clone git@github.com:PeteBro/eeg_access.git
-   cd eeg_access
+   git clone git@github.com:PeteBro/tnsd_access.git
+   cd tnsd_access
    pip install -e .
 
 Usage
@@ -20,7 +20,7 @@ Load trials for a subject
 
 .. code-block:: python
 
-   from eeg_access import TrialHandler
+   from tnsd_access import TrialHandler
 
    loader = TrialHandler()
 
@@ -36,7 +36,7 @@ Average by condition (ERP-style)
 
 .. code-block:: python
 
-   from eeg_access import TrialHandler
+   from tnsd_access import TrialHandler
 
    loader = TrialHandler()
 
@@ -114,7 +114,7 @@ Batch iteration (memory-efficient)
 
 .. code-block:: python
 
-   from eeg_access import TrialHandler
+   from tnsd_access import TrialHandler
 
    loader = TrialHandler()
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eeg_access"
+name = "tnsd_access"
 version = "0.1.0"
 description = "Simple interface for loading versioned EEG epoch datasets from zarr stores"
 readme = "README.md"
@@ -23,4 +23,4 @@ docs = ["sphinx>=7", "sphinx-rtd-theme>=2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["eeg_access*"]
+include = ["tnsd_access*"]

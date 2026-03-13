@@ -1,5 +1,5 @@
-eeg_access
-==========
+tnsd_access
+===========
 
 Simple interface for loading versioned EEG epoch datasets from zarr stores.
 

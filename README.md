@@ -1,4 +1,4 @@
-# eeg_access
+# tnsd_access
 
 [![Documentation Status](https://readthedocs.org/projects/nsd-access/badge/?version=latest)](https://nsd-access.readthedocs.io/en/latest/)
 
@@ -12,8 +12,8 @@ Full documentation: https://nsd-access.readthedocs.io/en/latest/
 
 **1. Clone the repo**
 ```bash
-git clone git@github.com:PeteBro/eeg_access.git
-cd eeg_access
+git clone git@github.com:PeteBro/tnsd_access.git
+cd tnsd_access
 ```
 
 **2. Install**
@@ -52,7 +52,7 @@ aws s3 cp s3://temporal-natural-scenes-dataset/ /path/to/local/dataset/ --recurs
 `init_dataset` downloads only the lightweight seed files needed to get started (metadata, manifests, session tables). Individual data stores are then fetched on demand the first time you query them.
 
 ```python
-from eeg_access import init_dataset
+from tnsd_access import init_dataset
 
 init_dataset('/path/to/local/dataset')
 ```
@@ -66,7 +66,7 @@ This creates the dataset directory if it doesn't exist and pulls the metadata re
 ### Load trials for a subject
 
 ```python
-from eeg_access import TrialHandler
+from tnsd_access import TrialHandler
 
 loader = TrialHandler('/path/to/local/dataset')
 
@@ -80,7 +80,7 @@ result = loader.get_data(trials)
 ### Average by condition (ERP-style)
 
 ```python
-from eeg_access import TrialHandler
+from tnsd_access import TrialHandler
 
 loader = TrialHandler('/path/to/local/dataset')
 
@@ -96,7 +96,7 @@ result = loader.get_data(trials, average_by='condition')
 ### Batch iteration (memory-efficient)
 
 ```python
-from eeg_access import TrialHandler
+from tnsd_access import TrialHandler
 
 loader = TrialHandler('/path/to/local/dataset')
 

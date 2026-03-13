@@ -4,9 +4,9 @@ import sys
 # Make the package importable when building locally without installing it
 sys.path.insert(0, os.path.abspath(".."))
 
-project = "eeg_access"
-copyright = "2024, eeg_access contributors"
-author = "eeg_access contributors"
+project = "tnsd_access"
+copyright = "2024, tnsd_access contributors"
+author = "tnsd_access contributors"
 
 extensions = [
     "sphinx.ext.autodoc",

@@ -1,7 +1,7 @@
 API Reference
 =============
 
-.. currentmodule:: eeg_access
+.. currentmodule:: tnsd_access
 
 Trial Data
 ----------

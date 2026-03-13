@@ -1,4 +1,4 @@
-"""eeg_access — versioned EEG epoch loading utilities."""
+"""tnsd_access — versioned EEG epoch loading utilities."""
 
 from .getdata.get_trials import TrialHandler
 from .utilities import init_dataset
