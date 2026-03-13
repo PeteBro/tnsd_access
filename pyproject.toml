@@ -14,6 +14,7 @@ dependencies = [
     "pandas",
     "zarr",
     "tqdm",
+    "boto3",
 ]
 
 [project.optional-dependencies]

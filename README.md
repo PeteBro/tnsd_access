@@ -23,6 +23,44 @@ pip install -e .
 
 ---
 
+## Data access
+
+The dataset is hosted on AWS S3. You need AWS credentials to access it.
+
+### 1. Install the AWS CLI and configure credentials
+
+Install the AWS CLI by following the [official instructions](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), then run:
+
+```bash
+aws configure
+```
+
+Enter your AWS Access Key ID, Secret Access Key, and preferred region when prompted. These credentials are used by the package internally via `boto3`.
+
+### 2. Get the dataset
+
+**Option A — copy the full dataset with the AWS CLI**
+
+If you want to mirror the entire dataset locally upfront:
+
+```bash
+aws s3 cp s3://temporal-natural-scenes-dataset/ /path/to/local/dataset/ --recursive
+```
+
+**Option B — initialise with the Python package (recommended)**
+
+`init_dataset` downloads only the lightweight seed files needed to get started (metadata, manifests, session tables). Individual data stores are then fetched on demand the first time you query them.
+
+```python
+from eeg_access import init_dataset
+
+init_dataset('/path/to/local/dataset')
+```
+
+This creates the dataset directory if it doesn't exist and pulls the metadata required for trial lookups. Once complete, point `TrialHandler` at the same root — any data stores not yet present locally will prompt you to download them automatically when queried.
+
+---
+
 ## Usage
 
 ### Load trials for a subject
@@ -30,7 +68,7 @@ pip install -e .
 ```python
 from eeg_access import TrialHandler
 
-loader = TrialHandler()
+loader = TrialHandler('/path/to/local/dataset')
 
 # Look up trials for subject 6, filtering to conditions 5 and 2951
 trials = loader.lookup_trials(subject=6, condition=[5, 2951])
@@ -44,7 +82,7 @@ result = loader.get_data(trials)
 ```python
 from eeg_access import TrialHandler
 
-loader = TrialHandler()
+loader = TrialHandler('/path/to/local/dataset')
 
 # Look up all shared trials across subjects
 trials = loader.lookup_trials(shared=True)
@@ -60,7 +98,7 @@ result = loader.get_data(trials, average_by='condition')
 ```python
 from eeg_access import TrialHandler
 
-loader = TrialHandler()
+loader = TrialHandler('/path/to/local/dataset')
 
 # Look up trials for subject 6
 trials = loader.lookup_trials(subject=6)
