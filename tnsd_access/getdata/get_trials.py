@@ -7,11 +7,12 @@ import pandas as pd
 import zarr
 from tqdm import tqdm
 from pathlib import Path
-from ..utilities import build_trial_metadata, resolve_dir, check_islocal, check_stale, fetch_remote
+from ..utilities import resolve_dir, check_islocal, fetch_remote
 
-
+BUCKET = 'temporal-natural-scenes-dataset'
 
 class TrialHandler:
+
     """Load and selected EEG trial data from a zarr datastores.
 
     Point this class at your dataset root folder and tell it which data version
@@ -38,7 +39,7 @@ class TrialHandler:
 
     Examples
     --------
-    >>> loader = TrialHandler('/data/nsdBIDS', version='preproc_1')
+    >>> loader = TrialHandler('/data/temporal-natural-scenes-dataset', version='v1')
 
     >>> # Load a specific subset by filtering inline
     >>> result = loader.get_data(subject=1, condition=[5, 2951])
@@ -50,16 +51,17 @@ class TrialHandler:
     """
 
 #
-    def __init__(self, dataset_root: str = 'nsdBIDS', version: str = 'preproc_1'):
+    def __init__(self, dataset_root: str = 'temporal-natural-scenes-dataset', version: str = 'v1'):
         """Resolve paths for reading datastore and initialize store cache for fast reading."""
 #
+        global BUCKET
+
         print('Resolving path...')
-        self.root = resolve_dir(dataset_root)
-        self.datastore = resolve_dir(os.path.join(version, 'datastore'), start=self.root)
+        self.root = resolve_dir(dataset_root, makedir=True)
+        self.datastore = self.root / 'derivatives' / version / 'datastore'
         print('Reading metadata...')
-        self.metadata_path = os.path.join(self.datastore, 'metadata.tsv')
-        self.metadata = pd.read_csv(self.metadata_path, sep='\t', index_col=False)
-        self.metadata['path'] = self.metadata['path'].apply(lambda p: (Path(self.datastore) / p).resolve())
+        self.metadata = pd.read_csv(self.datastore / 'metadata.tsv', sep='\t', index_col=False)
+        self.metadata['path'] = self.metadata['path'].apply(lambda p: (self.datastore / p).resolve())
         self.store_cache = {}
         print('Done.')
 
@@ -151,6 +153,7 @@ class TrialHandler:
             raise ValueError('Invalid cond: must be "and" or "or"')
 
         trials = self.metadata[mask].sort_values(list(filters.keys())).reset_index(drop=True)
+
         local_status = check_islocal(trials['path'].unique())
         missing = [p for p, local in local_status.items() if not local]
         present = [p for p, local in local_status.items() if local]
@@ -158,15 +161,16 @@ class TrialHandler:
         if missing:
             ans = input(f'{len(missing)} data store(s) not found locally. Download from remote? [y/n] ')
             if ans.strip().lower() == 'y':
-                fetch_remote(missing)
+                workers = input(f'Multithreading possible, how many workers would you like to download with? ')
+                fetch_remote(missing, BUCKET, self.root, max_workers=int(workers))
             else:
                 trials = trials[~trials['path'].isin(missing)].reset_index(drop=True)
 
-        stale = check_stale(present)
-        if stale:
-            ans = input(f'{len(stale)} data store(s) are out of date. Update from remote? [y/n] ')
-            if ans.strip().lower() == 'y':
-                fetch_remote(stale)
+        #stale = check_stale(present, BUCKET, self.root)
+        #if stale:
+        #    ans = input(f'{len(stale)} data store(s) are inconsistent with remote. Update from remote? [y/n] ')
+        #    if ans.strip().lower() == 'y':
+        #        fetch_remote(stale, BUCKET, self.root)
 
         return trials
 
@@ -315,7 +319,7 @@ class TrialHandler:
     def iter_data(
         self,
         trials: pd.DataFrame = None,
-        batch_size: int = 64,
+        batch_size: int = 1000,
         channels=None,
         tmin: float = None,
         tmax: float = None,

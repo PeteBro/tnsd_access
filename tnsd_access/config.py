@@ -1,0 +1,30 @@
+
+BUCKET = 'temporal-natural-scenes-dataset'
+
+SEED_FILES = ['dataset_description.json',
+              'CITATION.cff',
+              'LICENSE',
+              'README.md',
+              'CHANGES',
+#              '.housekeeping/manifest.json'
+              'derivatives/v1/datastore/manifest.json',
+              'derivatives/v1/datastore/metadata.tsv',
+              'sub-01/sub-01_sessions.tsv',
+#              'sub-01/sub-01_events.tsv',
+              'sub-01/sub-02_sessions.tsv',
+#              'sub-01/sub-02_events.tsv',
+              'sub-01/sub-03_sessions.tsv',
+#              'sub-01/sub-04_events.tsv',
+              'sub-01/sub-03_sessions.tsv',
+#              'sub-01/sub-03_events.tsv',
+              'sub-01/sub-04_sessions.tsv',
+#              'sub-01/sub-04_events.tsv',
+              'sub-01/sub-05_sessions.tsv',
+#              'sub-01/sub-05_events.tsv',
+              'sub-01/sub-06_sessions.tsv',
+#              'sub-01/sub-06_events.tsv',
+              'sub-01/sub-07_sessions.tsv',
+#              'sub-01/sub-07_events.tsv',
+              'sub-01/sub-08_sessions.tsv',
+#              'sub-01/sub-08_events.tsv',
+]
