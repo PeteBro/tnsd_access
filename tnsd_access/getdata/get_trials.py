@@ -7,7 +7,7 @@ import pandas as pd
 import zarr
 from tqdm import tqdm
 from pathlib import Path
-from ..utilities import build_trial_metadata, resolve_dir, check_islocal, check_stale, fetch_remote
+from ..utilities import resolve_dir, check_islocal, fetch_remote
 
 BUCKET = 'temporal-natural-scenes-dataset'
 
@@ -161,7 +161,8 @@ class TrialHandler:
         if missing:
             ans = input(f'{len(missing)} data store(s) not found locally. Download from remote? [y/n] ')
             if ans.strip().lower() == 'y':
-                fetch_remote(missing, BUCKET, self.root)
+                workers = input(f'Multithreading possible, how many workers would you like to download with? ')
+                fetch_remote(missing, BUCKET, self.root, max_workers=int(workers))
             else:
                 trials = trials[~trials['path'].isin(missing)].reset_index(drop=True)
 
@@ -318,7 +319,7 @@ class TrialHandler:
     def iter_data(
         self,
         trials: pd.DataFrame = None,
-        batch_size: int = 64,
+        batch_size: int = 1000,
         channels=None,
         tmin: float = None,
         tmax: float = None,

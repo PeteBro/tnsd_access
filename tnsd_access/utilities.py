@@ -31,7 +31,6 @@ def _s3_download(bucket, key, dest, progress):
 
 
 def fetch_remote(paths, bucket, root, max_workers=16, verbose=True):
-    """Download zarr stores from S3 to their local paths in parallel."""
     s3 = boto3.client('s3')
     root = Path(root)
 
