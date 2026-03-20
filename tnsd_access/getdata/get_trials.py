@@ -182,6 +182,7 @@ class TrialHandler:
         tmin: float = None,
         tmax: float = None,
         step = None,
+        sample_idcs=None,
         average_by=None,
         verbose=True,
         cond='and',
@@ -214,13 +215,17 @@ class TrialHandler:
         tmin : float, optional
             Start of the time window in seconds.  Trials are cropped to
             ``[tmin, tmax]`` before being returned.  When omitted, the full
-            epoch is returned.
+            epoch is returned.  Ignored when ``sample_idcs`` is provided.
         tmax : float, optional
-            End of the time window in seconds.  See ``tmin``.
+            End of the time window in seconds.  See ``tmin``.  Ignored when
+            ``sample_idcs`` is provided.
         step : int, optional
             Sample step size for downsampling.  ``step=2`` returns every other
             sample, halving the time resolution.  Default is ``None`` (no
-            downsampling).
+            downsampling).  Ignored when ``sample_idcs`` is provided.
+        sample_idcs : array-like of int, optional
+            Explicit sample indices to extract.  Takes precedence over
+            ``tmin``, ``tmax``, and ``step``.
         average_by : str or list of str, optional
             Metadata column(s) to average over.  For example
             ``average_by='condition'`` returns one averaged waveform per
@@ -282,10 +287,12 @@ class TrialHandler:
             if channels.size > 1 and np.all(np.diff(channels) == channels[1] - channels[0]):
                 channels = slice(channels[0], channels[-1] + 1, channels[1] - channels[0])
 
-        tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
-        tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
-
-        samples = slice(tmin_idx, tmax_idx, step)
+        if sample_idcs is not None:
+            samples = np.asarray(sample_idcs)
+        else:
+            tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
+            tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
+            samples = slice(tmin_idx, tmax_idx, step)
 
         # Sort by store then array_index for sequential chunk access;
         # record original row position so output order matches input trials
@@ -311,7 +318,10 @@ class TrialHandler:
             keys = [average_by] if isinstance(average_by, str) else list(average_by)
             groups = meta.groupby(keys, sort=False)
             data_array = np.stack([data_array[grp.index].mean(axis=0) for _, grp in groups])
-            meta = groups.first().drop(columns=['path', 'array_index'], errors='ignore').reset_index()
+            meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
+                         .drop(columns=['path', 'array_index'], errors='ignore')
+                         .dropna(axis=1)
+                         .reset_index())
     #
         return {"data": data_array, "metadata": meta}
 
