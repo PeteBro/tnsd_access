@@ -174,13 +174,14 @@ class TrialHandler:
         return trials
 
 #
-    def get_data(
+    def get_data( # TODO: Add sample index option as well as times - also maybe return an object or something / mne
         self,
         trials: pd.DataFrame = None,
         channels=None,
         tmin: float = None,
         tmax: float = None,
         step = None,
+        sample_idcs=None,
         average_by=None,
         verbose=True,
         cond='and',
@@ -281,10 +282,12 @@ class TrialHandler:
             if channels.size > 1 and np.all(np.diff(channels) == channels[1] - channels[0]):
                 channels = slice(channels[0], channels[-1] + 1, channels[1] - channels[0])
 
-        tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
-        tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
-
-        samples = slice(tmin_idx, tmax_idx, step)
+        if sample_idcs is not None:
+            samples = np.asarray(sample_idcs)
+        else:
+            tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
+            tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
+            samples = slice(tmin_idx, tmax_idx, step)
 
         # Sort by store then array_index for sequential chunk access;
         # record original row position so output order matches input trials
@@ -310,7 +313,10 @@ class TrialHandler:
             keys = [average_by] if isinstance(average_by, str) else list(average_by)
             groups = meta.groupby(keys, sort=False)
             data_array = np.stack([data_array[grp.index].mean(axis=0) for _, grp in groups])
-            meta = groups.first().drop(columns=['path', 'array_index'], errors='ignore').reset_index()
+            meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
+                         .drop(columns=['path', 'array_index'], errors='ignore')
+                         .dropna(axis=1)
+                         .reset_index())
     #
         return {"data": data_array, "metadata": meta}
 
