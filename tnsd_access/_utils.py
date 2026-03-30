@@ -1,36 +1,63 @@
-"""Shared utilities for dataset discovery and metadata construction."""
+"""Shared utilities for dataset discovery and remote access."""
 
 import os
-#import glob
-#import json
-#import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import pandas as pd
 from pathlib import Path
-from tqdm import tqdm
+
 import boto3
-#import zarr
+from tqdm import tqdm
 
 from .config import BUCKET, SEED_FILES
 
-def init_dataset(root):
 
+def init_dataset(root, modalities=('dataset', 'eeg', 'mri', 'stimuli')):
+    """Download seed files for all (or selected) modalities from S3.
+
+    Parameters
+    ----------
+    root : str
+        Local path where the dataset will be initialised.
+    modalities : tuple of str
+        Which seed files to fetch. Any combination of
+        ``'dataset'`` (top-level BIDS files), ``'eeg'``, ``'mri'``,
+        ``'stimuli'``. Defaults to all modalities.
+    """
     root = Path(root)
     os.makedirs(root, exist_ok=True)
 
+    files = []
+    for m in modalities:
+        files.extend(SEED_FILES.get(m, []))
+
+    if not files:
+        print('No seed files defined for the requested modalities.')
+        return
     print('Fetching seed files...')
-    fetch_remote([root / f for f in SEED_FILES], BUCKET, root)
+    fetch_remote([root / f for f in files], BUCKET, root)
 
 
 def _s3_download(bucket, key, dest, progress):
-
     dest.parent.mkdir(parents=True, exist_ok=True)
     boto3.client('s3').download_file(bucket, key, str(dest),
                                      Callback=lambda n: progress.update(n))
 
 
 def fetch_remote(paths, bucket, root, max_workers=16, verbose=True):
+    """Download files from S3 with parallel workers and progress tracking.
+
+    Parameters
+    ----------
+    paths : list of Path
+        Local destination paths (used to derive S3 keys relative to *root*).
+    bucket : str
+        S3 bucket name.
+    root : str or Path
+        Dataset root; used to compute S3 key prefixes.
+    max_workers : int
+        Number of parallel download threads (default 16).
+    verbose : bool
+        Show a tqdm progress bar (default True).
+    """
     s3 = boto3.client('s3')
     root = Path(root)
 
@@ -58,11 +85,27 @@ def fetch_remote(paths, bucket, root, max_workers=16, verbose=True):
 
 
 def resolve_dir(path, start=None, makedir=False):
+    """Locate a directory by searching upward then downward from *start*.
 
+    Parameters
+    ----------
+    path : str or Path
+        Directory name or relative path to find.
+    start : str or Path, optional
+        Search root. Defaults to ``os.getcwd()``.
+    makedir : bool
+        If True and no match is found, create the directory rather than raising.
+
+    Returns
+    -------
+    Path
+        Resolved absolute path to the directory.
+    """
     start = Path(start).resolve() if start else Path(os.getcwd())
     path = Path(path)
     upward = [p / path for p in [start, *start.parents] if (p / path).is_dir()]
-    downward = [p for p in start.rglob(str(path)) if p.is_dir()] if not upward and not path.is_absolute() else []
+    downward = ([p for p in start.rglob(str(path)) if p.is_dir()]
+                if not upward and not path.is_absolute() else [])
 
     matches = list({p.resolve() for p in upward + downward})
 
@@ -70,7 +113,6 @@ def resolve_dir(path, start=None, makedir=False):
         if makedir:
             os.makedirs(path)
             print('Could not find specified path, created instead.')
-            
         else:
             raise RuntimeError(f"Could not find directory '{path}'")
     if len(matches) > 1:
@@ -81,58 +123,5 @@ def resolve_dir(path, start=None, makedir=False):
 
 
 def check_islocal(paths):
-
+    """Return a dict mapping each path to whether it exists locally."""
     return {p: os.path.exists(p) for p in paths}
-
-
-#def get_hash(path):
-#    hasher = hashlib.sha256()
-#    allfiles = sorted(glob.glob(os.path.join(path, '**'), recursive=True))
-#    for fname in allfiles:
-#        if os.path.isfile(fname):
-#            hasher.update(open(fname, 'rb').read())
-#    return hasher.hexdigest()
-
-
-#def check_stale(paths, bucket, root):
-#    """Return paths whose checksum differs from the data_manifest.json on S3.
-#
-#    TODO: also verify local file checksums match the local manifest, to catch
-#    manual edits or corruption.
-#    """
-#    if not paths:
-#        return []
-#
-#    root = Path(root)
-#    datastore = Path(paths[0]).parent.parent
-#    manifest_key = str(datastore.relative_to(root) / 'manifest.json')
-#    local_manifest_path = datastore / 'manifest.json'
-#
-#    try:
-#        response = boto3.client('s3').get_object(Bucket=bucket, Key=manifest_key)
-#        s3_manifest = json.loads(response['Body'].read())
-#    except Exception:
-#        return []
-#
-#    if not local_manifest_path.exists():
-#        return list(paths)
-#
-#    with open(local_manifest_path) as f:
-#        local_manifest = json.load(f)
-#
-#    return [
-#        p for p in paths
-#        if s3_manifest.get(str(Path(p).relative_to(datastore))) != local_manifest.get(str(Path(p).relative_to(datastore)))
-#    ]
-
-
-#def build_trial_metadata(epochs_root: str) -> pd.DataFrame:
-#
-#    records = []
-#    for subject_dir in sorted(glob.glob(os.path.join(epochs_root, "sub-*"))):
-#        for chunk_dir in sorted(glob.glob(os.path.join(subject_dir, "chunk-*"))):
-#            z = zarr.open(chunk_dir, mode="r")
-#            df = pd.DataFrame(dict(z.attrs))
-#            df["path"] = chunk_dir
-#            records.append(df)
-#    return pd.concat(records, ignore_index=True)
