@@ -1,16 +1,12 @@
 """Shared utilities for dataset discovery and metadata construction."""
 
 import os
-#import glob
-#import json
-#import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import boto3
-#import zarr
 
 from .config import BUCKET, SEED_FILES
 
@@ -83,56 +79,3 @@ def resolve_dir(path, start=None, makedir=False):
 def check_islocal(paths):
 
     return {p: os.path.exists(p) for p in paths}
-
-
-#def get_hash(path):
-#    hasher = hashlib.sha256()
-#    allfiles = sorted(glob.glob(os.path.join(path, '**'), recursive=True))
-#    for fname in allfiles:
-#        if os.path.isfile(fname):
-#            hasher.update(open(fname, 'rb').read())
-#    return hasher.hexdigest()
-
-
-#def check_stale(paths, bucket, root):
-#    """Return paths whose checksum differs from the data_manifest.json on S3.
-#
-#    TODO: also verify local file checksums match the local manifest, to catch
-#    manual edits or corruption.
-#    """
-#    if not paths:
-#        return []
-#
-#    root = Path(root)
-#    datastore = Path(paths[0]).parent.parent
-#    manifest_key = str(datastore.relative_to(root) / 'manifest.json')
-#    local_manifest_path = datastore / 'manifest.json'
-#
-#    try:
-#        response = boto3.client('s3').get_object(Bucket=bucket, Key=manifest_key)
-#        s3_manifest = json.loads(response['Body'].read())
-#    except Exception:
-#        return []
-#
-#    if not local_manifest_path.exists():
-#        return list(paths)
-#
-#    with open(local_manifest_path) as f:
-#        local_manifest = json.load(f)
-#
-#    return [
-#        p for p in paths
-#        if s3_manifest.get(str(Path(p).relative_to(datastore))) != local_manifest.get(str(Path(p).relative_to(datastore)))
-#    ]
-
-
-#def build_trial_metadata(epochs_root: str) -> pd.DataFrame:
-#
-#    records = []
-#    for subject_dir in sorted(glob.glob(os.path.join(epochs_root, "sub-*"))):
-#        for chunk_dir in sorted(glob.glob(os.path.join(subject_dir, "chunk-*"))):
-#            z = zarr.open(chunk_dir, mode="r")
-#            df = pd.DataFrame(dict(z.attrs))
-#            df["path"] = chunk_dir
-#            records.append(df)
-#    return pd.concat(records, ignore_index=True)

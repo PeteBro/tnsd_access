@@ -50,10 +50,10 @@ class TrialHandler:
     >>> result['data'].shape   # (n_trials, n_channels, n_samples)
     """
 
-#
+
     def __init__(self, dataset_root: str = 'temporal-natural-scenes-dataset', version: str = 'v1'):
         """Resolve paths for reading datastore and initialize store cache for fast reading."""
-#
+
         global BUCKET
 
         print('Resolving path...')
@@ -65,7 +65,7 @@ class TrialHandler:
         self.store_cache = {}
         print('Done.')
 
-#
+
     def lookup_trials(self, cond='and', **filters) -> pd.DataFrame:
         """Return trials matching the given metadata criteria.
 
@@ -166,15 +166,9 @@ class TrialHandler:
             else:
                 trials = trials[~trials['path'].isin(missing)].reset_index(drop=True)
 
-        #stale = check_stale(present, BUCKET, self.root)
-        #if stale:
-        #    ans = input(f'{len(stale)} data store(s) are inconsistent with remote. Update from remote? [y/n] ')
-        #    if ans.strip().lower() == 'y':
-        #        fetch_remote(stale, BUCKET, self.root)
-
         return trials
 
-#
+
     def get_data(
         self,
         trials: pd.DataFrame = None,
@@ -184,6 +178,7 @@ class TrialHandler:
         step = None,
         sample_idcs=None,
         average_by=None,
+        drop_bads: bool = True,
         verbose=True,
         cond='and',
         **filters,
@@ -230,6 +225,11 @@ class TrialHandler:
             Metadata column(s) to average over.  For example
             ``average_by='condition'`` returns one averaged waveform per
             condition instead of one waveform per trial.
+        drop_bads : bool, optional
+            Drop trials flagged ``bad`` in the metadata before loading, so
+            they're excluded from the returned data and — when
+            ``average_by`` is set — from the average itself.  Default
+            ``True``.  Has no effect if the metadata has no ``bad`` column.
         verbose : bool, optional
             Show a progress bar while loading.  Default ``True``.
         cond : {'and', 'or'}, optional
@@ -269,6 +269,9 @@ class TrialHandler:
         """
         if trials is None:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
+
+        if drop_bads and 'bad' in trials.columns:
+            trials = trials[~trials['bad']].reset_index(drop=True)
 
         stores = trials['path'].unique()
         for path in stores:
@@ -311,9 +314,9 @@ class TrialHandler:
                 out_rows = group['out_row'].to_numpy()
                 data_array[out_rows] = store.oindex[arr_idcs, channels, samples]
                 prog.update(len(out_rows))
-    #
+    
         meta = trials.reset_index(drop=True)
-    #
+    
         if average_by is not None:
             keys = [average_by] if isinstance(average_by, str) else list(average_by)
             groups = meta.groupby(keys, sort=False)
@@ -322,10 +325,10 @@ class TrialHandler:
                          .drop(columns=['path', 'array_index'], errors='ignore')
                          .dropna(axis=1)
                          .reset_index())
-    #
+    
         return {"data": data_array, "metadata": meta}
 
-#
+
     def iter_data(
         self,
         trials: pd.DataFrame = None,
@@ -334,6 +337,7 @@ class TrialHandler:
         tmin: float = None,
         tmax: float = None,
         average_by=None,
+        drop_bads: bool = True,
         sort_lookup=True,
         cond='and',
         **filters,
@@ -374,6 +378,9 @@ class TrialHandler:
             End of the time window in seconds.  See ``tmin``.
         average_by : str or list of str, optional
             Metadata column(s) to average over within each batch.
+        drop_bads : bool, optional
+            Drop trials flagged ``bad`` in the metadata before loading each
+            batch.  Forwarded to :meth:`get_data`.  Default ``True``.
         sort_lookup : bool, optional
             Sort trials by store path and array index before iterating for
             more efficient sequential disk reads.  Default ``True``.
@@ -407,10 +414,10 @@ class TrialHandler:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
 
         keys = ([average_by] if isinstance(average_by, str) else list(average_by)) if average_by else None
-#
+
         if sort_lookup:
             trials = trials.sort_values(['path', 'array_index'])
-#
+
         if keys:
             # accumulate complete groups into batches, never splitting a group
             batch, count = [], 0
@@ -418,17 +425,18 @@ class TrialHandler:
                 if count + len(grp) > batch_size and batch:
                     yield self.get_data(pd.concat(batch), channels=channels,
                                         tmin=tmin, tmax=tmax, average_by=keys,
-                                        verbose=False)
+                                        drop_bads=drop_bads, verbose=False)
                     batch, count = [], 0
                 batch.append(grp)
                 count += len(grp)
             if batch:
                 yield self.get_data(pd.concat(batch), channels=channels,
                                     tmin=tmin, tmax=tmax, average_by=keys,
-                                    verbose=False)
+                                    drop_bads=drop_bads, verbose=False)
         else:
             for start in range(0, len(trials), batch_size):
                 yield self.get_data(
                     trials.iloc[start:start + batch_size],
-                    channels=channels, tmin=tmin, tmax=tmax, verbose=False
+                    channels=channels, tmin=tmin, tmax=tmax,
+                    drop_bads=drop_bads, verbose=False
                 )
