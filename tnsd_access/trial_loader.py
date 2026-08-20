@@ -7,7 +7,7 @@ import pandas as pd
 import zarr
 from tqdm import tqdm
 from pathlib import Path
-from ..utilities import resolve_dir, check_islocal, fetch_remote
+from .utilities import resolve_dir, check_islocal, fetch_remote
 
 BUCKET = 'temporal-natural-scenes-dataset'
 
