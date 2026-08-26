@@ -28,8 +28,8 @@ Load trials for a subject
    trials = loader.lookup_trials(subject=6, condition=[5, 2951])
 
    # Load all matching trials into memory
-   # Returns {'data': mne.Epochs, 'metadata': DataFrame}
-   result = loader.get_data(trials)
+   # Returns an mne.Epochs object; trial metadata is attached as epochs.metadata
+   epochs = loader.get_data(trials)
 
 Average by condition (ERP-style)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -44,9 +44,9 @@ Average by condition (ERP-style)
    trials = loader.lookup_trials(shared=True)
 
    # Load data and average across trials within each condition
-   # result['data'] is an mne.EpochsArray with one epoch per condition
-   # result['metadata'] has one row per condition, plus an 'n_trials' column
-   result = loader.get_data(trials, average_by='condition')
+   # Returns an mne.EpochsArray with one epoch per condition
+   # epochs.metadata has one row per condition, plus an 'n_trials' column
+   epochs = loader.get_data(trials, average_by='condition')
 
 Filter options
 ~~~~~~~~~~~~~~
@@ -122,6 +122,6 @@ Batch iteration (memory-efficient)
    trials = loader.lookup_trials(subject=6)
 
    # Iterate in batches of 32 trials — useful for large datasets
-   for batch in loader.iter_data(trials, batch_size=32):
-       epochs = batch['data']    # mne.Epochs, <=32 epochs
-       meta = batch['metadata']  # DataFrame aligned to epochs
+   for epochs in loader.iter_data(trials, batch_size=32):
+       data = epochs.get_data()  # <=32 epochs
+       meta = epochs.metadata    # DataFrame aligned to epochs

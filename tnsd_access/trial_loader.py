@@ -47,8 +47,8 @@ class TrialHandler:
 
     >>> # Or look up a trial table first, then load
     >>> trials = loader.lookup_trials(subject=1)
-    >>> result = loader.get_data(trials)
-    >>> result['data'].get_data().shape   # (n_trials, n_channels, n_samples)
+    >>> epochs = loader.get_data(trials)
+    >>> epochs.get_data().shape   # (n_trials, n_channels, n_samples)
     """
 
 
@@ -181,7 +181,7 @@ class TrialHandler:
         verbose=True,
         cond='and',
         **filters,
-    ) -> dict:
+    ) -> mne.Epochs:
         """Load EEG data, with optional inline trial filtering.
 
         Reads the requested trials from disk as an :class:`mne.Epochs`
@@ -238,28 +238,22 @@ class TrialHandler:
 
         Returns
         -------
-        dict
-            A dictionary with two keys:
-
-            ``'data'``
-                :class:`mne.Epochs` with one epoch per trial (or per group
-                when ``average_by`` is set), in the same order as ``trials``.
-            ``'metadata'``
-                ``data.metadata`` — DataFrame with one row per trial (or per
-                group when ``average_by`` is set), aligned to ``'data'``.
+        mne.Epochs
+            One epoch per trial (or per group when ``average_by`` is set), in
+            the same order as ``trials``.  Trial metadata is attached as
+            ``epochs.metadata``.
 
         Examples
         --------
         >>> # Inline filtering — no separate lookup_trials call needed
-        >>> result = loader.get_data(subject=1, shared=True)
-        >>> epochs = result['data']    # mne.Epochs, n_trials epochs
+        >>> epochs = loader.get_data(subject=1, shared=True)   # mne.Epochs, n_trials epochs
 
         >>> # Pass a pre-built trial table
         >>> trials = loader.lookup_trials(conditions=[1, 2, 3])
-        >>> result = loader.get_data(trials)
+        >>> epochs = loader.get_data(trials)
 
         >>> # Average across trials, grouped by condition
-        >>> result = loader.get_data(shared=True, average_by='condition')
+        >>> epochs = loader.get_data(shared=True, average_by='condition')
         """
         if trials is None:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
@@ -279,9 +273,10 @@ class TrialHandler:
         ordered = ordered.sort_values(['path', 'array_index'])
 
         pieces, out_rows = [], []
-        with tqdm(total=len(trials), desc='Loading Trials', disable=not verbose) as prog, \
+        with tqdm(total=len(trials), desc='Fetching trials', disable=not verbose) as prog, \
              mne.use_log_level('ERROR'):
             for path, group in ordered.groupby('path', sort=False):
+                prog.set_description(f'Fetching trials [{Path(path).name}]')
                 store = self.store_cache[path]
                 arr_idcs = group['array_index'].to_numpy()
                 piece = store[arr_idcs]
@@ -294,12 +289,19 @@ class TrialHandler:
                 out_rows.append(group['out_row'].to_numpy())
                 prog.update(len(group))
 
+        if verbose:
+            print(f'Concatenating {len(pieces)} file(s) worth of trials...')
         combined = mne.concatenate_epochs(pieces, verbose=False)
+
+        if verbose:
+            print('Reordering to match requested trial order...')
         order = np.argsort(np.concatenate(out_rows))
         combined = combined[order]
 
         if average_by is not None:
             keys = [average_by] if isinstance(average_by, str) else list(average_by)
+            if verbose:
+                print(f'Averaging trials by {keys}...')
             meta = combined.metadata.reset_index(drop=True)
             groups = meta.groupby(keys, sort=False)
             with mne.use_log_level('ERROR'):
@@ -311,7 +313,9 @@ class TrialHandler:
                 combined = mne.EpochsArray(avg_data, combined.info, tmin=combined.tmin, verbose=False)
                 combined.metadata = avg_meta
 
-        return {"data": combined, "metadata": combined.metadata}
+        if verbose:
+            print('Done.')
+        return combined
 
 
     def iter_data(
@@ -334,9 +338,9 @@ class TrialHandler:
         everything at once.  Useful when your full trial set is too large to
         fit in RAM, or when you want to feed a model batch-by-batch.
 
-        Each yielded item has the same structure as the dict returned by
-        :meth:`get_data`: a ``'data'`` mne.Epochs object and a ``'metadata'``
-        DataFrame.
+        Each yielded item is an :class:`mne.Epochs` object, same as
+        :meth:`get_data` returns, with trial metadata attached as
+        ``epochs.metadata``.
 
         When ``average_by`` is set, the iterator guarantees that all trials
         belonging to the same group are included in the same batch before
@@ -384,22 +388,19 @@ class TrialHandler:
 
         Yields
         ------
-        dict
-            Same structure as :meth:`get_data`: ``{'data': mne.Epochs,
-            'metadata': pd.DataFrame}``.
+        mne.Epochs
+            Same as :meth:`get_data` returns.
 
         Examples
         --------
         >>> # Inline filtering
-        >>> for batch in loader.iter_data(subject=1, batch_size=32):
-        ...     epochs = batch['data']   # mne.Epochs, <=32 epochs
-        ...     meta = batch['metadata']
-        ...     process(epochs, meta)
+        >>> for epochs in loader.iter_data(subject=1, batch_size=32):
+        ...     process(epochs, epochs.metadata)   # mne.Epochs, <=32 epochs
 
         >>> # Iterate with per-stimulus averaging
         >>> trials = loader.lookup_trials(shared=True)
-        >>> for batch in loader.iter_data(trials, batch_size=64, average_by='subject'):
-        ...     process(batch['data'], batch['metadata'])
+        >>> for epochs in loader.iter_data(trials, batch_size=64, average_by='subject'):
+        ...     process(epochs, epochs.metadata)
         """
         if trials is None:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
