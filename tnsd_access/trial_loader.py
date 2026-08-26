@@ -40,7 +40,7 @@ class TrialHandler:
 
     Examples
     --------
-    >>> loader = TrialHandler('/data/temporal-natural-scenes-dataset', version='v1')
+    >>> loader = TrialHandler('/data/temporal-natural-scenes-dataset', version='V0')
 
     >>> # Load a specific subset by filtering inline
     >>> result = loader.get_data(subject=1, condition=[5, 2951])
@@ -52,7 +52,7 @@ class TrialHandler:
     """
 
 
-    def __init__(self, dataset_root: str = 'temporal-natural-scenes-dataset', version: str = 'v1'):
+    def __init__(self, dataset_root: str = 'temporal-natural-scenes-dataset', version: str = 'V0'):
         """Resolve paths for reading datastore and initialize store cache for fast reading."""
 
         global BUCKET
