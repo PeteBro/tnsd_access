@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tnsd_access"
 version = "0.1.0"
-description = "Simple interface for loading versioned EEG epoch datasets from zarr stores"
+description = "Simple interface for loading versioned EEG epoch datasets from mne .fif stores"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
 dependencies = [
     "numpy",
     "pandas",
-    "zarr",
+    "mne",
     "tqdm",
     "boto3",
 ]

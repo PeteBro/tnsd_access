@@ -4,7 +4,7 @@ import os
 import glob
 import numpy as np
 import pandas as pd
-import zarr
+import mne
 from tqdm import tqdm
 from pathlib import Path
 from .utilities import resolve_dir, check_islocal, fetch_remote
@@ -13,7 +13,7 @@ BUCKET = 'temporal-natural-scenes-dataset'
 
 class TrialHandler:
 
-    """Load and selected EEG trial data from a zarr datastores.
+    """Load and select EEG trial data from mne Epochs (.fif) datastores.
 
     Point this class at your dataset root folder and tell it which data version
     you want to work with.  It will find the matching metadata table
@@ -24,9 +24,10 @@ class TrialHandler:
         dataset_root/
         └── .../ (any depth)
             └── <version>/
-                ├── *metadata.tsv
-                └── sub-XX/
-                    └── chunk-XX/   ← zarr stores
+                └── epochs/
+                    ├── *metadata.tsv
+                    └── sub-XX/
+                        └── ses-XX-epo.fif   ← mne Epochs files
 
     Parameters
     ----------
@@ -47,7 +48,7 @@ class TrialHandler:
     >>> # Or look up a trial table first, then load
     >>> trials = loader.lookup_trials(subject=1)
     >>> result = loader.get_data(trials)
-    >>> result['data'].shape   # (n_trials, n_channels, n_samples)
+    >>> result['data'].get_data().shape   # (n_trials, n_channels, n_samples)
     """
 
 
@@ -58,7 +59,7 @@ class TrialHandler:
 
         print('Resolving path...')
         self.root = resolve_dir(dataset_root, makedir=True)
-        self.datastore = self.root / 'derivatives' / version / 'datastore'
+        self.datastore = self.root / 'derivatives' / version / 'epochs'
         print('Reading metadata...')
         self.metadata = pd.read_csv(self.datastore / 'metadata.tsv', sep='\t', index_col=False)
         self.metadata['path'] = self.metadata['path'].apply(lambda p: (self.datastore / p).resolve())
@@ -175,20 +176,18 @@ class TrialHandler:
         channels=None,
         tmin: float = None,
         tmax: float = None,
-        step = None,
-        sample_idcs=None,
         average_by=None,
         drop_bads: bool = True,
         verbose=True,
         cond='and',
         **filters,
     ) -> dict:
-        """Load EEG data into memory, with optional inline trial filtering.
+        """Load EEG data, with optional inline trial filtering.
 
-        Reads the EEG arrays from disk and returns them as a NumPy array
-        together with the corresponding metadata.  Zarr stores are cached
-        after the first open, so repeated calls for trials from the same
-        store are fast.
+        Reads the requested trials from disk as an :class:`mne.Epochs`
+        object.  mne Epochs files are opened lazily and cached after the
+        first open, so repeated calls for trials from the same file are
+        fast.
 
         You can supply trials three ways:
 
@@ -210,21 +209,18 @@ class TrialHandler:
         tmin : float, optional
             Start of the time window in seconds.  Trials are cropped to
             ``[tmin, tmax]`` before being returned.  When omitted, the full
-            epoch is returned.  Ignored when ``sample_idcs`` is provided.
+            epoch is returned.
         tmax : float, optional
-            End of the time window in seconds.  See ``tmin``.  Ignored when
-            ``sample_idcs`` is provided.
-        step : int, optional
-            Sample step size for downsampling.  ``step=2`` returns every other
-            sample, halving the time resolution.  Default is ``None`` (no
-            downsampling).  Ignored when ``sample_idcs`` is provided.
-        sample_idcs : array-like of int, optional
-            Explicit sample indices to extract.  Takes precedence over
-            ``tmin``, ``tmax``, and ``step``.
+            End of the time window in seconds.  See ``tmin``.
         average_by : str or list of str, optional
             Metadata column(s) to average over.  For example
             ``average_by='condition'`` returns one averaged waveform per
-            condition instead of one waveform per trial.
+            condition instead of one waveform per trial.  The returned
+            metadata keeps ``average_by`` plus any other column that is
+            constant within every group (e.g. ``subject``); columns that
+            vary within a group (e.g. ``epoch``, ``onset``) are dropped.  An
+            ``n_trials`` column is added recording how many trials went
+            into each average.
         drop_bads : bool, optional
             Drop trials flagged ``bad`` in the metadata before loading, so
             they're excluded from the returned data and — when
@@ -246,19 +242,17 @@ class TrialHandler:
             A dictionary with two keys:
 
             ``'data'``
-                NumPy array of shape ``(n_trials, n_channels, n_samples)``
-                (or ``(n_groups, n_channels, n_samples)`` when
-                ``average_by`` is set), dtype ``float32``.
+                :class:`mne.Epochs` with one epoch per trial (or per group
+                when ``average_by`` is set), in the same order as ``trials``.
             ``'metadata'``
-                DataFrame with one row per trial (or per group when
-                ``average_by`` is set), aligned to the first axis of
-                ``'data'``.
+                ``data.metadata`` — DataFrame with one row per trial (or per
+                group when ``average_by`` is set), aligned to ``'data'``.
 
         Examples
         --------
         >>> # Inline filtering — no separate lookup_trials call needed
         >>> result = loader.get_data(subject=1, shared=True)
-        >>> eeg = result['data']    # shape: (n_trials, n_channels, n_samples)
+        >>> epochs = result['data']    # mne.Epochs, n_trials epochs
 
         >>> # Pass a pre-built trial table
         >>> trials = loader.lookup_trials(conditions=[1, 2, 3])
@@ -276,57 +270,48 @@ class TrialHandler:
         stores = trials['path'].unique()
         for path in stores:
             if path not in self.store_cache.keys():
-                self.store_cache[path] = zarr.open(path, mode='r')
+                self.store_cache[path] = mne.read_epochs(path, preload=False, verbose=False)
 
-        store0 = self.store_cache[stores[0]]
-        info = store0.attrs['info']
-        times = np.asarray(store0.attrs['times'])
-        channel_names = info['ch_names']
-
-        if channels is None:
-            channels = slice(None)
-        else:
-            channels = np.array([channel_names.index(c) if isinstance(c, str) else c for c in channels])
-            if channels.size > 1 and np.all(np.diff(channels) == channels[1] - channels[0]):
-                channels = slice(channels[0], channels[-1] + 1, channels[1] - channels[0])
-
-        if sample_idcs is not None:
-            samples = np.asarray(sample_idcs)
-        else:
-            tmin_idx = 0 if tmin is None else np.abs(times - tmin).argmin()
-            tmax_idx = len(times) if tmax is None else np.abs(times - tmax).argmin()
-            samples = slice(tmin_idx, tmax_idx, step)
-
-        # Sort by store then array_index for sequential chunk access;
+        # Sort by store then array_index for sequential file access;
         # record original row position so output order matches input trials
         ordered = trials[['path', 'array_index']].copy()
         ordered['out_row'] = np.arange(len(trials))
         ordered = ordered.sort_values(['path', 'array_index'])
-    
-        samplearr = store0.oindex[0, channels, samples]
-        n_channels, n_samples = samplearr.shape
-        data_array = np.empty((len(trials), n_channels, n_samples), dtype='float32')
-    
-        with tqdm(total=len(trials), desc='Loading Trials', disable=not verbose) as prog:
+
+        pieces, out_rows = [], []
+        with tqdm(total=len(trials), desc='Loading Trials', disable=not verbose) as prog, \
+             mne.use_log_level('ERROR'):
             for path, group in ordered.groupby('path', sort=False):
                 store = self.store_cache[path]
                 arr_idcs = group['array_index'].to_numpy()
-                out_rows = group['out_row'].to_numpy()
-                data_array[out_rows] = store.oindex[arr_idcs, channels, samples]
-                prog.update(len(out_rows))
-    
-        meta = trials.reset_index(drop=True)
-    
+                piece = store[arr_idcs]
+                piece.load_data()
+                if channels is not None:
+                    piece.pick(channels)
+                if tmin is not None or tmax is not None:
+                    piece.crop(tmin=tmin, tmax=tmax)
+                pieces.append(piece)
+                out_rows.append(group['out_row'].to_numpy())
+                prog.update(len(group))
+
+        combined = mne.concatenate_epochs(pieces, verbose=False)
+        order = np.argsort(np.concatenate(out_rows))
+        combined = combined[order]
+
         if average_by is not None:
             keys = [average_by] if isinstance(average_by, str) else list(average_by)
+            meta = combined.metadata.reset_index(drop=True)
             groups = meta.groupby(keys, sort=False)
-            data_array = np.stack([data_array[grp.index].mean(axis=0) for _, grp in groups])
-            meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
-                         .drop(columns=['path', 'array_index'], errors='ignore')
-                         .dropna(axis=1)
-                         .reset_index())
-    
-        return {"data": data_array, "metadata": meta}
+            with mne.use_log_level('ERROR'):
+                avg_data = np.stack([combined[grp.index.to_numpy()].get_data().mean(axis=0) for _, grp in groups])
+                avg_meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
+                                  .dropna(axis=1)
+                                  .reset_index())
+                avg_meta.insert(len(keys), 'n_trials', groups.size().to_numpy())
+                combined = mne.EpochsArray(avg_data, combined.info, tmin=combined.tmin, verbose=False)
+                combined.metadata = avg_meta
+
+        return {"data": combined, "metadata": combined.metadata}
 
 
     def iter_data(
@@ -339,6 +324,7 @@ class TrialHandler:
         average_by=None,
         drop_bads: bool = True,
         sort_lookup=True,
+        verbose=True,
         cond='and',
         **filters,
     ):
@@ -349,7 +335,8 @@ class TrialHandler:
         fit in RAM, or when you want to feed a model batch-by-batch.
 
         Each yielded item has the same structure as the dict returned by
-        :meth:`get_data`: a ``'data'`` array and a ``'metadata'`` DataFrame.
+        :meth:`get_data`: a ``'data'`` mne.Epochs object and a ``'metadata'``
+        DataFrame.
 
         When ``average_by`` is set, the iterator guarantees that all trials
         belonging to the same group are included in the same batch before
@@ -367,7 +354,7 @@ class TrialHandler:
             used if no filters are given.
         batch_size : int, optional
             Maximum number of trials (or group rows) to load per batch.
-            Default is 64.
+            Default is 1000.
         channels : list, optional
             Channels to load (integer indices or name strings).  All channels
             are loaded when omitted.
@@ -382,8 +369,12 @@ class TrialHandler:
             Drop trials flagged ``bad`` in the metadata before loading each
             batch.  Forwarded to :meth:`get_data`.  Default ``True``.
         sort_lookup : bool, optional
-            Sort trials by store path and array index before iterating for
-            more efficient sequential disk reads.  Default ``True``.
+            Sort trials by store path and array index before batching, so
+            each batch tends to draw from fewer distinct files.  Default
+            ``True``.
+        verbose : bool, optional
+            Show a progress bar while loading each batch.  Forwarded to
+            :meth:`get_data`.  Default ``True``.
         cond : {'and', 'or'}, optional
             How to combine multiple ``**filters``.  Ignored when ``trials``
             is provided explicitly.  Default ``'and'``.
@@ -394,16 +385,16 @@ class TrialHandler:
         Yields
         ------
         dict
-            Same structure as :meth:`get_data`: ``{'data': np.ndarray,
+            Same structure as :meth:`get_data`: ``{'data': mne.Epochs,
             'metadata': pd.DataFrame}``.
 
         Examples
         --------
         >>> # Inline filtering
         >>> for batch in loader.iter_data(subject=1, batch_size=32):
-        ...     eeg = batch['data']   # shape: (<=32, n_channels, n_samples)
+        ...     epochs = batch['data']   # mne.Epochs, <=32 epochs
         ...     meta = batch['metadata']
-        ...     process(eeg, meta)
+        ...     process(epochs, meta)
 
         >>> # Iterate with per-stimulus averaging
         >>> trials = loader.lookup_trials(shared=True)
@@ -425,18 +416,18 @@ class TrialHandler:
                 if count + len(grp) > batch_size and batch:
                     yield self.get_data(pd.concat(batch), channels=channels,
                                         tmin=tmin, tmax=tmax, average_by=keys,
-                                        drop_bads=drop_bads, verbose=False)
+                                        drop_bads=drop_bads, verbose=verbose)
                     batch, count = [], 0
                 batch.append(grp)
                 count += len(grp)
             if batch:
                 yield self.get_data(pd.concat(batch), channels=channels,
                                     tmin=tmin, tmax=tmax, average_by=keys,
-                                    drop_bads=drop_bads, verbose=False)
+                                    drop_bads=drop_bads, verbose=verbose)
         else:
             for start in range(0, len(trials), batch_size):
                 yield self.get_data(
                     trials.iloc[start:start + batch_size],
                     channels=channels, tmin=tmin, tmax=tmax,
-                    drop_bads=drop_bads, verbose=False
+                    drop_bads=drop_bads, verbose=verbose
                 )
