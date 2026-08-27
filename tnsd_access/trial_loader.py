@@ -1,7 +1,5 @@
 """Trial metadata lookup and data loader."""
 
-import os
-import glob
 import numpy as np
 import pandas as pd
 import mne
@@ -157,7 +155,6 @@ class TrialHandler:
 
         local_status = check_islocal(trials['path'].unique())
         missing = [p for p, local in local_status.items() if not local]
-        present = [p for p, local in local_status.items() if local]
 
         if missing:
             ans = input(f'{len(missing)} data store(s) not found locally. Download from remote? [y/n] ')
@@ -180,8 +177,9 @@ class TrialHandler:
         drop_bads: bool = True,
         verbose=True,
         cond='and',
+        return_as='mne',
         **filters,
-    ) -> mne.Epochs:
+    ):
         """Load EEG data, with optional inline trial filtering.
 
         Reads the requested trials from disk as an :class:`mne.Epochs`
@@ -232,6 +230,13 @@ class TrialHandler:
             How to combine multiple ``**filters`` (passed to
             :meth:`lookup_trials`).  Ignored when ``trials`` is provided
             explicitly.  Default ``'and'``.
+        return_as : {'mne', 'numpy'}, optional
+            ``'mne'`` (default) returns a single :class:`mne.Epochs` object.
+            ``'numpy'`` skips building that object entirely — no
+            :func:`mne.concatenate_epochs`, no re-wrapping into
+            :class:`mne.EpochsArray` for ``average_by`` — and instead
+            returns the raw ``(data, metadata)`` arrays directly.  Faster
+            when you don't need mne's plotting/metadata machinery.
         **filters
             Column / value pairs forwarded to :meth:`lookup_trials` when
             ``trials`` is not provided.
@@ -239,9 +244,14 @@ class TrialHandler:
         Returns
         -------
         mne.Epochs
-            One epoch per trial (or per group when ``average_by`` is set), in
-            the same order as ``trials``.  Trial metadata is attached as
-            ``epochs.metadata``.
+            When ``return_as='mne'``.  One epoch per trial (or per group
+            when ``average_by`` is set), in the same order as ``trials``.
+            Trial metadata is attached as ``epochs.metadata``.
+        (numpy.ndarray, pandas.DataFrame)
+            When ``return_as='numpy'``.  ``data`` has shape
+            ``(n_trials, n_channels, n_samples)`` (or ``(n_groups, ...)``
+            when ``average_by`` is set); ``metadata`` has one row per
+            entry in ``data``, in the same order.
 
         Examples
         --------
@@ -254,7 +264,12 @@ class TrialHandler:
 
         >>> # Average across trials, grouped by condition
         >>> epochs = loader.get_data(shared=True, average_by='condition')
+
+        >>> # Skip the mne wrapper entirely
+        >>> data, metadata = loader.get_data(subject=1, shared=True, return_as='numpy')
         """
+        if return_as not in ('mne', 'numpy'):
+            raise ValueError(f"Invalid return_as: {return_as!r}, must be 'mne' or 'numpy'")
         if trials is None:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
 
@@ -272,7 +287,7 @@ class TrialHandler:
         ordered['out_row'] = np.arange(len(trials))
         ordered = ordered.sort_values(['path', 'array_index'])
 
-        pieces, out_rows = [], []
+        pieces, data_pieces, meta_pieces, out_rows = [], [], [], []
         with tqdm(total=len(trials), desc='Fetching trials', disable=not verbose) as prog, \
              mne.use_log_level('ERROR'):
             for path, group in ordered.groupby('path', sort=False):
@@ -285,17 +300,59 @@ class TrialHandler:
                     piece.pick(channels)
                 if tmin is not None or tmax is not None:
                     piece.crop(tmin=tmin, tmax=tmax)
-                pieces.append(piece)
+                if return_as == 'numpy':
+                    data_pieces.append(piece.get_data())
+                    meta_pieces.append(piece.metadata)
+                else:
+                    pieces.append(piece)
                 out_rows.append(group['out_row'].to_numpy())
                 prog.update(len(group))
 
+        if return_as == 'numpy':
+            return self._get_numpy(data_pieces, meta_pieces, out_rows, average_by, verbose)
+        order = np.argsort(np.concatenate(out_rows))
+        return self._get_mne(pieces, order, average_by, verbose)
+
+    @staticmethod
+    def _aggregate_metadata(groups, keys):
+        """Collapse grouped metadata to one row per group, keeping only columns constant within each group."""
+        meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
+                      .dropna(axis=1)
+                      .reset_index())
+        meta.insert(len(keys), 'n_trials', groups.size().to_numpy())
+        return meta
+
+    def _get_numpy(self, data_pieces, meta_pieces, out_rows, average_by, verbose):
+        """Stack per-file arrays directly into (data, metadata), skipping mne's Epochs machinery entirely."""
+        if verbose:
+            print(f'Stacking {len(data_pieces)} file(s) worth of trials...')
+        data = np.empty((sum(len(r) for r in out_rows), *data_pieces[0].shape[1:]), dtype=data_pieces[0].dtype)
+        for piece, rows in zip(data_pieces, out_rows):
+            data[rows] = piece
+
+        order = np.argsort(np.concatenate(out_rows))
+        metadata = pd.concat(meta_pieces, ignore_index=True).iloc[order].reset_index(drop=True)
+
+        if average_by is not None:
+            keys = [average_by] if isinstance(average_by, str) else list(average_by)
+            if verbose:
+                print(f'Averaging trials by {keys}...')
+            groups = metadata.groupby(keys, sort=False)
+            data = np.stack([data[grp.index.to_numpy()].mean(axis=0) for _, grp in groups])
+            metadata = self._aggregate_metadata(groups, keys)
+
+        if verbose:
+            print('Done.')
+        return data, metadata
+
+    def _get_mne(self, pieces, order, average_by, verbose):
+        """Concatenate per-file Epochs into one mne.Epochs object, averaging groups if requested."""
         if verbose:
             print(f'Concatenating {len(pieces)} file(s) worth of trials...')
         combined = mne.concatenate_epochs(pieces, verbose=False)
 
         if verbose:
             print('Reordering to match requested trial order...')
-        order = np.argsort(np.concatenate(out_rows))
         combined = combined[order]
 
         if average_by is not None:
@@ -306,10 +363,7 @@ class TrialHandler:
             groups = meta.groupby(keys, sort=False)
             with mne.use_log_level('ERROR'):
                 avg_data = np.stack([combined[grp.index.to_numpy()].get_data().mean(axis=0) for _, grp in groups])
-                avg_meta = (groups.agg(lambda col: col.iloc[0] if col.nunique() == 1 else np.nan)
-                                  .dropna(axis=1)
-                                  .reset_index())
-                avg_meta.insert(len(keys), 'n_trials', groups.size().to_numpy())
+                avg_meta = self._aggregate_metadata(groups, keys)
                 combined = mne.EpochsArray(avg_data, combined.info, tmin=combined.tmin, verbose=False)
                 combined.metadata = avg_meta
 
@@ -330,6 +384,7 @@ class TrialHandler:
         sort_lookup=True,
         verbose=True,
         cond='and',
+        return_as='mne',
         **filters,
     ):
         """Iterate over trials in memory-friendly batches.
@@ -338,9 +393,9 @@ class TrialHandler:
         everything at once.  Useful when your full trial set is too large to
         fit in RAM, or when you want to feed a model batch-by-batch.
 
-        Each yielded item is an :class:`mne.Epochs` object, same as
-        :meth:`get_data` returns, with trial metadata attached as
-        ``epochs.metadata``.
+        Each yielded item is whatever :meth:`get_data` returns for the given
+        ``return_as`` — an :class:`mne.Epochs` object (with metadata attached
+        as ``epochs.metadata``), or a ``(data, metadata)`` tuple.
 
         When ``average_by`` is set, the iterator guarantees that all trials
         belonging to the same group are included in the same batch before
@@ -382,14 +437,16 @@ class TrialHandler:
         cond : {'and', 'or'}, optional
             How to combine multiple ``**filters``.  Ignored when ``trials``
             is provided explicitly.  Default ``'and'``.
+        return_as : {'mne', 'numpy'}, optional
+            Forwarded to :meth:`get_data` for every batch.  Default ``'mne'``.
         **filters
             Column / value pairs forwarded to :meth:`lookup_trials` when
             ``trials`` is not provided.
 
         Yields
         ------
-        mne.Epochs
-            Same as :meth:`get_data` returns.
+        mne.Epochs or (numpy.ndarray, pandas.DataFrame)
+            Same as :meth:`get_data` returns, per ``return_as``.
 
         Examples
         --------
@@ -417,18 +474,21 @@ class TrialHandler:
                 if count + len(grp) > batch_size and batch:
                     yield self.get_data(pd.concat(batch), channels=channels,
                                         tmin=tmin, tmax=tmax, average_by=keys,
-                                        drop_bads=drop_bads, verbose=verbose)
+                                        drop_bads=drop_bads, verbose=verbose,
+                                        return_as=return_as)
                     batch, count = [], 0
                 batch.append(grp)
                 count += len(grp)
             if batch:
                 yield self.get_data(pd.concat(batch), channels=channels,
                                     tmin=tmin, tmax=tmax, average_by=keys,
-                                    drop_bads=drop_bads, verbose=verbose)
+                                    drop_bads=drop_bads, verbose=verbose,
+                                    return_as=return_as)
         else:
             for start in range(0, len(trials), batch_size):
                 yield self.get_data(
                     trials.iloc[start:start + batch_size],
                     channels=channels, tmin=tmin, tmax=tmax,
-                    drop_bads=drop_bads, verbose=verbose
+                    drop_bads=drop_bads, verbose=verbose,
+                    return_as=return_as
                 )

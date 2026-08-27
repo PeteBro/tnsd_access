@@ -110,3 +110,12 @@ for epochs in loader.iter_data(trials, batch_size=32):
     data = epochs.get_data()  # (batch_size, n_channels, n_samples)
     meta = epochs.metadata    # DataFrame aligned to data's first axis
 ```
+
+### Skipping the mne wrapper
+
+Pass `return_as='numpy'` to `get_data`/`iter_data` to get a plain `(data, metadata)` tuple instead of an `mne.Epochs` object — this skips `mne.concatenate_epochs` and (for `average_by`) rebuilding an `mne.EpochsArray`, which is faster if you don't need mne's plotting/metadata machinery.
+
+```python
+data, metadata = loader.get_data(trials, return_as='numpy')
+# data shape: (n_trials, n_channels, n_samples)
+```
