@@ -60,9 +60,80 @@ class TrialHandler:
         self.datastore = self.root / 'derivatives' / version / 'epochs'
         print('Reading metadata...')
         self.metadata = pd.read_csv(self.datastore / 'metadata.tsv', sep='\t', index_col=False)
-        self.metadata['path'] = self.metadata['path'].apply(lambda p: (self.datastore / p).resolve())
+
+        # Resolve only the handful of unique parent directories, not every one of
+        # ~1M rows individually — the filename component is never a symlink, only
+        # the directory can be, so per-row .resolve() was pure syscall overhead.
+        parts = self.metadata['path'].str.rsplit('/', n=1, expand=True)
+        parts.columns = ['dir', 'name']
+        resolved_dirs = {d: str((self.datastore / d).resolve()) for d in parts['dir'].unique()}
+        self.metadata['path'] = parts['dir'].map(resolved_dirs) + '/' + parts['name']
+
         self.store_cache = {}
+        self.zscore_cache = {}
         print('Done.')
+
+
+    @staticmethod
+    def _stats_paths(epoch_path, level):
+        """Map an epochs file path to its (mean, std) per-channel stats tsvs, e.g.
+        ``sub-01/ses-eeg01-epo.fif`` -> ``sub-01/info/ses-eeg01_{level}_{mean,std}.tsv``."""
+        epoch_path = Path(epoch_path)
+        session = epoch_path.stem.removesuffix('-epo')
+        info_dir = epoch_path.parent / 'info'
+        return (info_dir / f'{session}_{level}_mean.tsv',
+                info_dir / f'{session}_{level}_std.tsv')
+
+
+    def _ensure_zscore_stats(self, paths, level):
+        """Load per-channel zscore stats for the given store paths into self.zscore_cache, fetching any missing files."""
+        needed = [p for p in paths if (p, level) not in self.zscore_cache]
+        if not needed:
+            return
+
+        stats_files = [f for p in needed for f in self._stats_paths(p, level)]
+        local_status = check_islocal(stats_files)
+        missing = [p for p, local in local_status.items() if not local]
+
+        if missing:
+            ans = input(f'{len(missing)} {level}-level stats file(s) not found locally. Download from remote? [y/n] ')
+            if ans.strip().lower() == 'y':
+                workers = input('Multithreading possible, how many workers would you like to download with? ')
+                fetch_remote(missing, BUCKET, self.root, max_workers=int(workers))
+            else:
+                raise RuntimeError(f"Missing {level}-level stats files, cannot apply zscore='{level}'.")
+
+        for p in needed:
+            mean_path, std_path = self._stats_paths(p, level)
+            mean_df = pd.read_csv(mean_path, sep='\t')
+            std_df = pd.read_csv(std_path, sep='\t')
+            if 'run' in mean_df.columns:
+                mean_df = mean_df.set_index('run')
+                std_df = std_df.set_index('run')
+            self.zscore_cache[(p, level)] = (mean_df, std_df)
+
+
+    def _apply_zscore(self, piece, path, level, runs):
+        """Standardize a loaded piece in place using cached per-channel mean/std stats.
+
+        Stats only cover the EEG channels (not EOG/stim/etc), so align by
+        channel name rather than assuming the stats and the piece have the
+        same channel set/order."""
+        mean_df, std_df = self.zscore_cache[(path, level)]
+        ch_idx = [piece.ch_names.index(ch) for ch in mean_df.columns]
+        if level == 'session':
+            mean = mean_df.to_numpy()[0][None, :, None]
+            std = std_df.to_numpy()[0][None, :, None]
+        else:
+            if isinstance(mean_df.index, pd.RangeIndex):
+                mean = mean_df.to_numpy()[runs - 1][:, :, None]
+                std = std_df.to_numpy()[runs - 1][:, :, None]
+            else:
+                mean = mean_df.loc[runs].to_numpy()[:, :, None]
+                std = std_df.loc[runs].to_numpy()[:, :, None]
+        # single fancy-index read + write (not two, via -= then /=) — the fancy
+        # index copies on every access, so this halves the passes over the data
+        piece._data[:, ch_idx, :] = (piece._data[:, ch_idx, :] - mean) / std
 
 
     def lookup_trials(self, cond='and', **filters) -> pd.DataFrame:
@@ -175,6 +246,7 @@ class TrialHandler:
         tmax: float = None,
         average_by=None,
         drop_bads: bool = True,
+        zscore: str = None,
         verbose=True,
         cond='and',
         return_as='mne',
@@ -224,6 +296,13 @@ class TrialHandler:
             they're excluded from the returned data and — when
             ``average_by`` is set — from the average itself.  Default
             ``True``.  Has no effect if the metadata has no ``bad`` column.
+        zscore : {'run', 'session', None}, optional
+            Standardize each channel using precomputed per-channel mean/std
+            stats before cropping or averaging.  ``'run'`` uses stats
+            computed within each trial's run, ``'session'`` uses stats
+            computed across the whole session.  Missing stats files are
+            fetched from remote the same way missing ``.fif`` stores are.
+            Default ``None`` (no standardization).
         verbose : bool, optional
             Show a progress bar while loading.  Default ``True``.
         cond : {'and', 'or'}, optional
@@ -270,6 +349,8 @@ class TrialHandler:
         """
         if return_as not in ('mne', 'numpy'):
             raise ValueError(f"Invalid return_as: {return_as!r}, must be 'mne' or 'numpy'")
+        if zscore not in (None, 'run', 'session'):
+            raise ValueError(f"Invalid zscore: {zscore!r}, must be 'run', 'session', or None")
         if trials is None:
             trials = self.lookup_trials(cond=cond, **filters) if filters else self.metadata.copy()
 
@@ -280,10 +361,13 @@ class TrialHandler:
         for path in stores:
             if path not in self.store_cache.keys():
                 self.store_cache[path] = mne.read_epochs(path, preload=False, verbose=False)
+        if zscore is not None:
+            self._ensure_zscore_stats(stores, zscore)
 
         # Sort by store then array_index for sequential file access;
         # record original row position so output order matches input trials
-        ordered = trials[['path', 'array_index']].copy()
+        cols = ['path', 'array_index'] + (['run'] if zscore == 'run' else [])
+        ordered = trials[cols].copy()
         ordered['out_row'] = np.arange(len(trials))
         ordered = ordered.sort_values(['path', 'array_index'])
 
@@ -296,6 +380,15 @@ class TrialHandler:
                 arr_idcs = group['array_index'].to_numpy()
                 piece = store[arr_idcs]
                 piece.load_data()
+                if zscore is not None:
+                    runs = group['run'].to_numpy() if zscore == 'run' else None
+                    self._apply_zscore(piece, path, zscore, runs)
+                    # mne.concatenate_epochs re-reads file-backed epochs from disk,
+                    # silently dropping in-place edits — rebuild as an in-memory
+                    # EpochsArray so the zscored data actually survives concatenation.
+                    piece = mne.EpochsArray(piece.get_data(), piece.info, events=piece.events,
+                                             event_id=piece.event_id, tmin=piece.tmin,
+                                             metadata=piece.metadata, verbose=False)
                 if channels is not None:
                     piece.pick(channels)
                 if tmin is not None or tmax is not None:
@@ -381,6 +474,7 @@ class TrialHandler:
         tmax: float = None,
         average_by=None,
         drop_bads: bool = True,
+        zscore: str = None,
         sort_lookup=True,
         verbose=True,
         cond='and',
@@ -427,6 +521,10 @@ class TrialHandler:
         drop_bads : bool, optional
             Drop trials flagged ``bad`` in the metadata before loading each
             batch.  Forwarded to :meth:`get_data`.  Default ``True``.
+        zscore : {'run', 'session', None}, optional
+            Standardize each channel using precomputed per-channel mean/std
+            stats before cropping or averaging.  Forwarded to
+            :meth:`get_data` for every batch.  Default ``None``.
         sort_lookup : bool, optional
             Sort trials by store path and array index before batching, so
             each batch tends to draw from fewer distinct files.  Default
@@ -474,7 +572,7 @@ class TrialHandler:
                 if count + len(grp) > batch_size and batch:
                     yield self.get_data(pd.concat(batch), channels=channels,
                                         tmin=tmin, tmax=tmax, average_by=keys,
-                                        drop_bads=drop_bads, verbose=verbose,
+                                        drop_bads=drop_bads, zscore=zscore, verbose=verbose,
                                         return_as=return_as)
                     batch, count = [], 0
                 batch.append(grp)
@@ -482,13 +580,13 @@ class TrialHandler:
             if batch:
                 yield self.get_data(pd.concat(batch), channels=channels,
                                     tmin=tmin, tmax=tmax, average_by=keys,
-                                    drop_bads=drop_bads, verbose=verbose,
+                                    drop_bads=drop_bads, zscore=zscore, verbose=verbose,
                                     return_as=return_as)
         else:
             for start in range(0, len(trials), batch_size):
                 yield self.get_data(
                     trials.iloc[start:start + batch_size],
                     channels=channels, tmin=tmin, tmax=tmax,
-                    drop_bads=drop_bads, verbose=verbose,
+                    drop_bads=drop_bads, zscore=zscore, verbose=verbose,
                     return_as=return_as
                 )

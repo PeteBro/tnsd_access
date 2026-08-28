@@ -32,7 +32,7 @@ def fetch_remote(paths, bucket, root, max_workers=16, verbose=True):
 
     objects = []
     for local_path in paths:
-        prefix = str(Path(local_path).relative_to(root))
+        prefix = Path(local_path).relative_to(root).as_posix()
         for page in s3.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get('Contents', []):
                 objects.append((obj['Key'], obj['Size']))
